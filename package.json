@@ -1,0 +1,7 @@
+{
+  "name": "nextlevel-bugdesk",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node dashboard_server.js"
+  }
+}
