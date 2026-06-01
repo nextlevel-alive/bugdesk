@@ -229,7 +229,7 @@ tr.bug-row:hover td{background:#1a1f2e;cursor:pointer;}
 </div>
 
 <script>
-let allBugs=[], openIdx=null, openBugId=null;
+let allBugs=[], openIdx=null, openBugId=null, mediaCache={};
 
 function switchTab(tab){
   document.getElementById('panel-list').style.display=tab==='list'?'':'none';
@@ -294,7 +294,7 @@ function renderTable(bugs){
             </div>
             <div class="detail-section" style="margin-top:12px">
               <div class="detail-label">첨부 미디어</div>
-              <div id="media-\${i}" data-loaded="\${isOpen?'1':''}" style="margin-top:6px"><span style="color:#334155;font-size:12px">\${isOpen?'':'불러오는 중...'}</span></div>
+              <div id="media-\${i}" style="margin-top:6px"><span style="color:#334155;font-size:12px">불러오는 중...</span></div>
             </div>
             \${isAns&&b.answer?\`<div class="detail-section" style="margin-top:12px"><div class="detail-label" style="color:#8b5cf6">기존 답변</div><div class="existing-answer">\${(b.answer||'').replace(/</g,'&lt;')}</div></div>\`:''}
           </div>
@@ -312,6 +312,44 @@ function renderTable(bugs){
       </td>
     </tr>\`;
   });
+  // 열려있던 행 미디어 캐시 복원
+  if(openBugId){
+    const oi=bugs.findIndex(b=>b.bug_id===openBugId);
+    if(oi>=0){
+      const el=document.getElementById('media-'+oi);
+      if(el&&mediaCache[openBugId]!==undefined) el.innerHTML=mediaCache[openBugId];
+      else if(el&&mediaCache[openBugId]===undefined) loadMedia(openBugId,el);
+    }
+  }
+}
+
+function fixUrl(u){if(!u)return '';return u.startsWith('//')?'https:'+u:u;}
+function mediaTag(rawUrl){
+  const u=fixUrl(rawUrl);
+  if(!u) return '';
+  const ext=u.split('?')[0].split('.').pop().toLowerCase();
+  if(['jpg','jpeg','png','gif','webp','heic','bmp'].includes(ext)){
+    return \`<img src="\${u}" style="max-width:100%;border-radius:8px;margin-bottom:8px;display:block" onerror="this.style.display='none'"/>\`;
+  }
+  return \`<video controls style="max-width:100%;border-radius:8px;margin-bottom:8px;display:block"><source src="\${u}">영상을 재생할 수 없습니다.</video>\`;
+}
+
+async function loadMedia(bugId, mediaEl){
+  if(mediaCache[bugId]!==undefined){mediaEl.innerHTML=mediaCache[bugId];return;}
+  mediaEl.innerHTML='<span style="color:#475569;font-size:12px">불러오는 중...</span>';
+  const data=await fetch('/api/bubble-record/'+bugId).then(r=>r.json()).catch(()=>null);
+  let html='';
+  if(data&&data.response){
+    const r=data.response;
+    const rawUrl=r['url']||'';
+    if(rawUrl&&rawUrl!=='https://'&&rawUrl.length>8) html+=\`<a href="\${rawUrl}" target="_blank" style="color:#60a5fa;font-size:12px;display:block;margin-bottom:6px">🔗 \${rawUrl}</a>\`;
+    ['첨부이미지'].forEach(k=>{
+      if(r[k]){const arr=Array.isArray(r[k])?r[k]:[r[k]];arr.forEach(u=>{html+=mediaTag(u);});}
+    });
+    ['video_file','video'].forEach(k=>{if(r[k]) html+=mediaTag(r[k]);});
+  }
+  mediaCache[bugId]=html||'<span style="color:#334155;font-size:12px">첨부파일 없음</span>';
+  mediaEl.innerHTML=mediaCache[bugId];
 }
 
 async function toggleDetail(i){
@@ -321,28 +359,9 @@ async function toggleDetail(i){
   openIdx=row.classList.contains('open')?i:null;
   openBugId=row.classList.contains('open')?(allBugs[i]?.bug_id||null):null;
   if(row.classList.contains('open')){
+    const bugId=allBugs[i].bug_id;
     const mediaEl=document.getElementById('media-'+i);
-    if(mediaEl&&!mediaEl.dataset.loaded){
-      mediaEl.dataset.loaded='1';
-      const bugId=allBugs[i].bug_id;
-      const data=await fetch('/api/bubble-record/'+bugId).then(r=>r.json()).catch(()=>null);
-      if(data&&data.response){
-        const r=data.response;
-        const fixUrl=u=>u?u.startsWith('//')?'https:'+u:u:'';
-        let html='';
-        const rawUrl=r['url']||'';
-        if(rawUrl&&rawUrl!=='https://'&&rawUrl.length>8) html+=\`<a href="\${rawUrl}" target="_blank" style="color:#60a5fa;font-size:12px;display:block;margin-bottom:6px">🔗 \${rawUrl}</a>\`;
-        if(r['첨부이미지']){
-          const imgs=Array.isArray(r['첨부이미지'])?r['첨부이미지']:[r['첨부이미지']];
-          imgs.forEach(img=>{const u=fixUrl(img);if(u) html+=\`<img src="\${u}" style="max-width:100%;border-radius:8px;margin-bottom:8px;display:block" onerror="this.style.display='none'"/>\`;});
-        }
-        if(r['video']||r['video_file']){
-          const v=fixUrl(r['video']||r['video_file']);
-          html+=\`<video controls style="max-width:100%;border-radius:8px;margin-bottom:8px"><source src="\${v}">영상을 재생할 수 없습니다.</video>\`;
-        }
-        mediaEl.innerHTML=html||'<span style="color:#334155;font-size:12px">첨부파일 없음</span>';
-      }
-    }
+    if(mediaEl) await loadMedia(bugId,mediaEl);
   }
 }
 
