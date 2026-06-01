@@ -50,6 +50,59 @@ function sendKakao(phone,name,inquiryType,content,answer){return new Promise((re
 // ── Bubble API 업데이트 ───────────────────────────────────────
 function updateBubble(bugId,answer){return new Promise((resolve)=>{const body=JSON.stringify({'답변 여부':true,'답변하기':answer});const path=`/api/1.1/obj/${encodeURIComponent(BUBBLE_TYPE)}/${bugId}`;const req=https.request({hostname:BUBBLE_APP_HOST,path,method:'PATCH',headers:{'Content-Type':'application/json','Authorization':`Bearer ${BUBBLE_API_KEY}`,'Content-Length':Buffer.byteLength(body)}},res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>{try{resolve({status:res.statusCode,body:JSON.parse(d)});}catch{resolve({status:res.statusCode,raw:d});}});});req.on('error',e=>resolve({error:e.message}));req.write(body);req.end();});}
 
+// ── Bubble API GET (미디어/전체 필드) ─────────────────────────
+function getBubbleRecord(bugId){return new Promise((resolve)=>{const path=`/api/1.1/obj/${encodeURIComponent(BUBBLE_TYPE)}/${bugId}`;const req=https.request({hostname:BUBBLE_APP_HOST,path,method:'GET',headers:{'Authorization':`Bearer ${BUBBLE_API_KEY}`}},res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve(null);}});});req.on('error',()=>resolve(null));req.end();});}
+
+// ── Bubble → MySQL 동기화 ─────────────────────────────────────
+async function syncFromBubble(){
+  try {
+    // Bubble에서 답변완료 레코드 가져오기
+    const path=`/api/1.1/obj/${encodeURIComponent(BUBBLE_TYPE)}?constraints=${encodeURIComponent(JSON.stringify([{key:'답변 여부',constraint_type:'equals',value:true}]))}&limit=100`;
+    const data = await new Promise((resolve)=>{const req=https.request({hostname:BUBBLE_APP_HOST,path,method:'GET',headers:{'Authorization':`Bearer ${BUBBLE_API_KEY}`}},res=>{let d='';res.on('data',c=>d+=c);res.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve(null);}});});req.on('error',()=>resolve(null));req.end();});
+    if(!data||!data.response||!data.response.results) return {synced:0};
+    const records = data.response.results;
+    let synced=0;
+    for(const r of records){
+      if(!r._id||!r['답변하기']) continue;
+      const esc_id=r._id.replace(/'/g,"''");
+      const esc_ans=(r['답변하기']||'').replace(/'/g,"''");
+      const existing=await query(`SELECT answered FROM bug_report_sync WHERE bug_id='${esc_id}' LIMIT 1`);
+      if(existing.length && existing[0].answered==='0'){
+        await query(`UPDATE bug_report_sync SET answered=1, answer='${esc_ans}', updated_at=NOW() WHERE bug_id='${esc_id}'`);
+        synced++;
+      }
+    }
+    return {synced, total:records.length};
+  } catch(e){ return {error:e.message}; }
+}
+
+// ── Slack 알림 ────────────────────────────────────────────────
+const SLACK_WEBHOOK = process.env.SLACK_WEBHOOK || '';
+let lastCheckedAt = new Date().toISOString().slice(0,19).replace('T',' ');
+
+function sendSlack(text){
+  if(!SLACK_WEBHOOK) return;
+  try {
+    const u=new URL(SLACK_WEBHOOK);
+    const body=JSON.stringify({text});
+    const req=https.request({hostname:u.hostname,path:u.pathname,method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)}},()=>{});
+    req.on('error',()=>{});
+    req.write(body); req.end();
+  } catch(e){}
+}
+
+async function pollNewBugs(){
+  try {
+    const now=new Date().toISOString().slice(0,19).replace('T',' ');
+    const rows=await query(`SELECT product_name, type, email, content, created_at FROM bug_report_sync WHERE created_at > '${lastCheckedAt}' ORDER BY created_at ASC`);
+    for(const r of rows){
+      const msg=`🆕 새 문의 접수\n*제품*: ${r.product_name||'-'}\n*유형*: ${r.type||'-'}\n*이메일*: ${r.email||'-'}\n*내용*: ${(r.content||'').slice(0,100)}${(r.content||'').length>100?'...':''}\n*접수일시*: ${r.created_at}`;
+      sendSlack(msg);
+    }
+    lastCheckedAt=now;
+  } catch(e){}
+}
+
 // ── 키워드 빈도 분석 ──────────────────────────────────────────
 const STOP_WORDS=new Set(['이','가','을','를','은','는','에','에서','으로','로','와','과','의','도','만','것','수','그','저','제','안녕하세요','감사합니다','안녕','네','아','그런데','그리고','하지만','또한','그래서','때문에','같은','같이','때','중','후','전','부터','까지','위해','위한','통해','통한','대해','대한','이용','사용','합니다','입니다','습니다','니다','세요','주세요','해주세요','해요','아요','어요','있어요','없어요','있습니다','없습니다','있는데','있는','없는','하는','되는','됩니다','하고','이고','이며','이나','이랑','있고','없고','하면','되면','이면','있으면','없으면','같아요','같습니다','같은데','감사','부탁','드립니다','드려요','주시면','주시기','바랍니다','부탁드립니다','확인','관련','관한','내용','문의','사항']);
 function extractKeywords(texts){const freq={};for(const text of texts){const words=text.replace(/[^가-힣a-zA-Z0-9 ]/g,' ').split(/\s+/);for(const w of words){if(w.length<2)continue;if(STOP_WORDS.has(w))continue;const stem=w.replace(/(요|니다|어서|아서|에서|이에요|예요|이요)$/,'');if(stem.length<2)continue;freq[stem]=(freq[stem]||0)+1;}}return Object.entries(freq).sort((a,b)=>b[1]-a[1]).slice(0,15);}
@@ -141,6 +194,7 @@ tr.bug-row:hover td{background:#1a1f2e;cursor:pointer;}
   </select>
   <input type="text" id="fSearch" placeholder="이메일 또는 내용 검색..." style="width:220px" oninput="filterLocal()"/>
   <button class="btn btn-sm" onclick="load()">새로고침</button>
+  <button class="btn btn-sm" id="syncBtn" onclick="syncBubble()" style="background:#0e7490">Bubble 동기화</button>
 </div>
 <div class="card">
 <table>
@@ -226,6 +280,10 @@ function renderTable(bugs){
               <div class="detail-label">문의 내용</div>
               <div class="detail-content">\${(b.content||'').replace(/</g,'&lt;')}</div>
             </div>
+            <div class="detail-section" style="margin-top:12px">
+              <div class="detail-label">첨부 미디어</div>
+              <div id="media-\${i}" style="margin-top:6px"><span style="color:#334155;font-size:12px">불러오는 중...</span></div>
+            </div>
             \${isAns&&b.answer?\`<div class="detail-section" style="margin-top:12px"><div class="detail-label" style="color:#8b5cf6">기존 답변</div><div class="existing-answer">\${(b.answer||'').replace(/</g,'&lt;')}</div></div>\`:''}
           </div>
           <div class="detail-section">
@@ -244,11 +302,43 @@ function renderTable(bugs){
   });
 }
 
-function toggleDetail(i){
+async function toggleDetail(i){
   const row=document.getElementById('detail-'+i);
   if(openIdx!==null&&openIdx!==i){const prev=document.getElementById('detail-'+openIdx);if(prev)prev.classList.remove('open');}
   row.classList.toggle('open');
   openIdx=row.classList.contains('open')?i:null;
+  if(row.classList.contains('open')){
+    const mediaEl=document.getElementById('media-'+i);
+    if(mediaEl&&!mediaEl.dataset.loaded){
+      mediaEl.dataset.loaded='1';
+      const bugId=allBugs[i].bug_id;
+      const data=await fetch('/api/bubble-record/'+bugId).then(r=>r.json()).catch(()=>null);
+      if(data&&data.response){
+        const r=data.response;
+        let html='';
+        if(r['url']) html+=\`<a href="\${r['url']}" target="_blank" style="color:#60a5fa;font-size:12px;display:block;margin-bottom:6px">🔗 \${r['url']}</a>\`;
+        if(r['첨부이미지']){
+          const imgs=Array.isArray(r['첨부이미지'])?r['첨부이미지']:[r['첨부이미지']];
+          imgs.forEach(img=>{if(img) html+=\`<img src="\${img}" style="max-width:100%;border-radius:8px;margin-bottom:8px;display:block" onerror="this.style.display='none'"/>\`;});
+        }
+        if(r['video']||r['video_file']){
+          const v=r['video']||r['video_file'];
+          html+=\`<video controls style="max-width:100%;border-radius:8px;margin-bottom:8px"><source src="\${v}">영상을 재생할 수 없습니다.</video>\`;
+        }
+        mediaEl.innerHTML=html||'<span style="color:#334155;font-size:12px">첨부파일 없음</span>';
+      }
+    }
+  }
+}
+
+async function syncBubble(){
+  const btn=document.getElementById('syncBtn');
+  btn.disabled=true; btn.textContent='동기화 중...';
+  const res=await fetch('/api/sync-bubble',{method:'POST'});
+  const d=await res.json();
+  btn.disabled=false; btn.textContent='Bubble 동기화';
+  alert(d.error?'오류: '+d.error:\`동기화 완료: \${d.synced}건 업데이트 (전체 답변 \${d.total}건)\`);
+  load();
 }
 
 async function submitAnswer(bugId,i){
@@ -312,7 +402,18 @@ const server = http.createServer(async (req, res) => {
   const parsed = url.parse(req.url, true);
   const getBody = () => new Promise(resolve => { let d=''; req.on('data',c=>d+=c); req.on('end',()=>{try{resolve(JSON.parse(d));}catch{resolve({});}}); });
 
-  if (parsed.pathname === '/api/bugs' && req.method === 'GET') {
+  if (parsed.pathname.startsWith('/api/bubble-record/') && req.method === 'GET') {
+    const bugId = parsed.pathname.split('/')[3];
+    const data = await getBubbleRecord(bugId);
+    res.writeHead(200,{'Content-Type':'application/json;charset=utf-8'});
+    res.end(JSON.stringify(data));
+
+  } else if (parsed.pathname === '/api/sync-bubble' && req.method === 'POST') {
+    const result = await syncFromBubble();
+    res.writeHead(200,{'Content-Type':'application/json;charset=utf-8'});
+    res.end(JSON.stringify(result));
+
+  } else if (parsed.pathname === '/api/bugs' && req.method === 'GET') {
     const product=parsed.query.product||'', type=parsed.query.type||'', answered=parsed.query.answered;
     let where='1=1';
     if(product) where+=` AND product_name='${esc(product)}'`;
@@ -377,4 +478,6 @@ if(require.main===module){
   const PORT=process.env.PORT||3001;
   server.listen(PORT,()=>console.log('BugDesk running at http://localhost:'+PORT));
   startDB();
-}else{startDB();module.exports=server;}
+  // Slack 새 문의 폴링 (1분마다)
+  if(SLACK_WEBHOOK) setInterval(pollNewBugs, 60000);
+}else{startDB();if(SLACK_WEBHOOK)setInterval(pollNewBugs,60000);module.exports=server;}
