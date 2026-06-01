@@ -105,12 +105,19 @@ function sendSlack(bug){
   } catch(e){}
 }
 
+async function initSlackColumn(){
+  try {
+    await query(`ALTER TABLE bug_report_sync ADD COLUMN IF NOT EXISTS slack_notified TINYINT DEFAULT 0`);
+  } catch(e){}
+}
+
 async function pollNewBugs(){
   try {
-    const now=new Date().toISOString().slice(0,19).replace('T',' ');
-    const rows=await query(`SELECT product_name, type, email, content, created_at FROM bug_report_sync WHERE created_at > '${lastCheckedAt}' ORDER BY created_at ASC`);
-    for(const r of rows) sendSlack(r);
-    lastCheckedAt=now;
+    const rows=await query(`SELECT bug_id, product_name, type, email, content, created_at FROM bug_report_sync WHERE (slack_notified IS NULL OR slack_notified=0) ORDER BY created_at ASC LIMIT 20`);
+    for(const r of rows){
+      sendSlack(r);
+      await query(`UPDATE bug_report_sync SET slack_notified=1 WHERE bug_id='${esc(r.bug_id)}'`);
+    }
   } catch(e){}
 }
 
@@ -508,10 +515,17 @@ const server = http.createServer(async (req, res) => {
 
 function startDB(){connect().then(()=>console.log('DB connected')).catch(err=>{console.error('DB failed:',err.message);setTimeout(startDB,3000);});}
 
+function startAll(){
+  startDB();
+  // DB 준비 후 컬럼 초기화 + 폴링 시작
+  setTimeout(async ()=>{
+    await initSlackColumn();
+    if(SLACK_WEBHOOK) setInterval(pollNewBugs, 60000);
+  }, 3000);
+}
+
 if(require.main===module){
   const PORT=process.env.PORT||3001;
   server.listen(PORT,()=>console.log('BugDesk running at http://localhost:'+PORT));
-  startDB();
-  // Slack 새 문의 폴링 (1분마다)
-  if(SLACK_WEBHOOK) setInterval(pollNewBugs, 60000);
-}else{startDB();if(SLACK_WEBHOOK)setInterval(pollNewBugs,60000);module.exports=server;}
+  startAll();
+}else{startAll();module.exports=server;}
