@@ -1,9 +1,19 @@
 {
   "version": 2,
-  "builds": [{ "src": "dashboard_server.js", "use": "@vercel/node", "config": { "maxLambdaSize": "10mb" } }],
-  "routes": [{ "src": "/(.*)", "dest": "/dashboard_server.js" }],
-  "regions": ["icn1"],
-  "functions": {
-    "dashboard_server.js": { "maxDuration": 30 }
-  }
+  "builds": [
+    {
+      "src": "dashboard_server.js",
+      "use": "@vercel/node",
+      "config": {
+        "maxLambdaSize": "10mb"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/dashboard_server.js"
+    }
+  ],
+  "regions": ["icn1"]
 }
