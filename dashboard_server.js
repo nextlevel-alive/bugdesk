@@ -112,6 +112,41 @@ async function initSlackColumn(){
   } catch(e){}
 }
 
+// ── 미답변 리마인더 (수/금 오전 10시 KST) ─────────────────────
+let lastReminderDate = '';
+
+async function checkUnansweredReminder(){
+  try {
+    const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+    const day  = kst.getUTCDay();   // 3=수, 5=금
+    const hour = kst.getUTCHours(); // 10시
+    const dateStr = kst.toISOString().slice(0, 10);
+    if ((day === 3 || day === 5) && hour === 10 && dateStr !== lastReminderDate) {
+      lastReminderDate = dateStr;
+      const rows = await query(`SELECT COUNT(*) AS cnt FROM bug_report_sync WHERE answered=0 AND created_at >= '2026-06-01' AND created_at <= NOW() - INTERVAL 48 HOUR`);
+      const cnt = Number(rows[0].cnt);
+      if (cnt > 0) sendSlackReminder(cnt);
+    }
+  } catch(e){}
+}
+
+function sendSlackReminder(cnt){
+  if(!SLACK_WEBHOOK) return;
+  try {
+    const u = new URL(SLACK_WEBHOOK);
+    const body = JSON.stringify({
+      text: `❤️‍🔥 현재 2일 넘게 응답되지 않은 답변이 ${cnt}건 있습니다.\n고객이 기다리지 않게 서둘러 답변해주세요 !`,
+      blocks: [
+        {type:'section', text:{type:'mrkdwn', text:`❤️‍🔥 현재 2일 넘게 응답되지 않은 답변이 *${cnt}건* 있습니다.\n고객이 기다리지 않게 서둘러 답변해주세요 !`}},
+        {type:'actions', elements:[{type:'button', text:{type:'plain_text', text:'버그 해결하러 가기', emoji:true}, url:'https://bugdesk.vercel.app', style:'primary'}]}
+      ]
+    });
+    const req = https.request({hostname:u.hostname, path:u.pathname+u.search, method:'POST', headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)}}, ()=>{});
+    req.on('error', ()=>{});
+    req.write(body); req.end();
+  } catch(e){}
+}
+
 async function pollNewBugs(){
   try {
     const rows=await query(`SELECT bug_id, product_name, type, email, content, created_at FROM bug_report_sync WHERE (slack_notified IS NULL OR slack_notified=0) ORDER BY created_at ASC LIMIT 20`);
@@ -522,6 +557,7 @@ function startAll(){
   setTimeout(async ()=>{
     await initSlackColumn();
     if(SLACK_WEBHOOK) setInterval(pollNewBugs, 60000);
+    if(SLACK_WEBHOOK) setInterval(checkUnansweredReminder, 60000);
   }, 3000);
 }
 
