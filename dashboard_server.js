@@ -80,12 +80,26 @@ async function syncFromBubble(){
 const SLACK_WEBHOOK = process.env.SLACK_WEBHOOK || '';
 let lastCheckedAt = new Date().toISOString().slice(0,19).replace('T',' ');
 
-function sendSlack(text){
+function getFirstSentence(text){
+  if(!text) return '내용 없음';
+  const cleaned=String(text).trim();
+  const match=cleaned.match(/[^.!?。！？\n]+[.!?。！？]?/);
+  return match?match[0].trim():cleaned.slice(0,80);
+}
+
+function sendSlack(bug){
   if(!SLACK_WEBHOOK) return;
   try {
     const u=new URL(SLACK_WEBHOOK);
-    const body=JSON.stringify({text});
-    const req=https.request({hostname:u.hostname,path:u.pathname,method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)}},()=>{});
+    const summary=getFirstSentence(bug.content);
+    const body=JSON.stringify({
+      text:`🍩 신규 버그가 등록되었습니다! 내용 요약 : '${summary}'`,
+      blocks:[
+        {type:'section',text:{type:'mrkdwn',text:`🍩 *신규 버그가 등록되었습니다!*\n내용 요약 : '${summary}'`}},
+        {type:'actions',elements:[{type:'button',text:{type:'plain_text',text:'버그 해결하러 가기',emoji:true},url:'https://bugdesk.vercel.app',style:'primary'}]}
+      ]
+    });
+    const req=https.request({hostname:u.hostname,path:u.pathname+u.search,method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)}},()=>{});
     req.on('error',()=>{});
     req.write(body); req.end();
   } catch(e){}
@@ -95,10 +109,7 @@ async function pollNewBugs(){
   try {
     const now=new Date().toISOString().slice(0,19).replace('T',' ');
     const rows=await query(`SELECT product_name, type, email, content, created_at FROM bug_report_sync WHERE created_at > '${lastCheckedAt}' ORDER BY created_at ASC`);
-    for(const r of rows){
-      const msg=`🆕 새 문의 접수\n*제품*: ${r.product_name||'-'}\n*유형*: ${r.type||'-'}\n*이메일*: ${r.email||'-'}\n*내용*: ${(r.content||'').slice(0,100)}${(r.content||'').length>100?'...':''}\n*접수일시*: ${r.created_at}`;
-      sendSlack(msg);
-    }
+    for(const r of rows) sendSlack(r);
     lastCheckedAt=now;
   } catch(e){}
 }
@@ -218,7 +229,7 @@ tr.bug-row:hover td{background:#1a1f2e;cursor:pointer;}
 </div>
 
 <script>
-let allBugs=[], openIdx=null;
+let allBugs=[], openIdx=null, openBugId=null;
 
 function switchTab(tab){
   document.getElementById('panel-list').style.display=tab==='list'?'':'none';
@@ -260,6 +271,7 @@ function renderTable(bugs){
   if(!bugs.length){tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#475569;padding:32px">문의 내역이 없습니다.</td></tr>';return;}
   tbody.innerHTML='';
   bugs.forEach((b,i)=>{
+    const isOpen = b.bug_id === openBugId;
     const isAns=b.answered==='1'||b.answered===1;
     const dt=(b.created_at||'').slice(0,16);
     tbody.innerHTML+=\`
@@ -272,7 +284,7 @@ function renderTable(bugs){
       <td><div class="preview">\${b.content||''}</div></td>
       <td><span class="badge \${isAns?'badge-ans':'badge-unans'}">\${isAns?'답변완료':'미답변'}</span></td>
     </tr>
-    <tr class="detail-row" id="detail-\${i}">
+    <tr class="detail-row\${isOpen?' open':''}" id="detail-\${i}">
       <td class="detail-cell" colspan="7">
         <div class="detail-inner">
           <div>
@@ -282,7 +294,7 @@ function renderTable(bugs){
             </div>
             <div class="detail-section" style="margin-top:12px">
               <div class="detail-label">첨부 미디어</div>
-              <div id="media-\${i}" style="margin-top:6px"><span style="color:#334155;font-size:12px">불러오는 중...</span></div>
+              <div id="media-\${i}" data-loaded="\${isOpen?'1':''}" style="margin-top:6px"><span style="color:#334155;font-size:12px">\${isOpen?'':'불러오는 중...'}</span></div>
             </div>
             \${isAns&&b.answer?\`<div class="detail-section" style="margin-top:12px"><div class="detail-label" style="color:#8b5cf6">기존 답변</div><div class="existing-answer">\${(b.answer||'').replace(/</g,'&lt;')}</div></div>\`:''}
           </div>
@@ -307,6 +319,7 @@ async function toggleDetail(i){
   if(openIdx!==null&&openIdx!==i){const prev=document.getElementById('detail-'+openIdx);if(prev)prev.classList.remove('open');}
   row.classList.toggle('open');
   openIdx=row.classList.contains('open')?i:null;
+  openBugId=row.classList.contains('open')?(allBugs[i]?.bug_id||null):null;
   if(row.classList.contains('open')){
     const mediaEl=document.getElementById('media-'+i);
     if(mediaEl&&!mediaEl.dataset.loaded){
@@ -315,14 +328,16 @@ async function toggleDetail(i){
       const data=await fetch('/api/bubble-record/'+bugId).then(r=>r.json()).catch(()=>null);
       if(data&&data.response){
         const r=data.response;
+        const fixUrl=u=>u?u.startsWith('//')?'https:'+u:u:'';
         let html='';
-        if(r['url']) html+=\`<a href="\${r['url']}" target="_blank" style="color:#60a5fa;font-size:12px;display:block;margin-bottom:6px">🔗 \${r['url']}</a>\`;
+        const rawUrl=r['url']||'';
+        if(rawUrl&&rawUrl!=='https://'&&rawUrl.length>8) html+=\`<a href="\${rawUrl}" target="_blank" style="color:#60a5fa;font-size:12px;display:block;margin-bottom:6px">🔗 \${rawUrl}</a>\`;
         if(r['첨부이미지']){
           const imgs=Array.isArray(r['첨부이미지'])?r['첨부이미지']:[r['첨부이미지']];
-          imgs.forEach(img=>{if(img) html+=\`<img src="\${img}" style="max-width:100%;border-radius:8px;margin-bottom:8px;display:block" onerror="this.style.display='none'"/>\`;});
+          imgs.forEach(img=>{const u=fixUrl(img);if(u) html+=\`<img src="\${u}" style="max-width:100%;border-radius:8px;margin-bottom:8px;display:block" onerror="this.style.display='none'"/>\`;});
         }
         if(r['video']||r['video_file']){
-          const v=r['video']||r['video_file'];
+          const v=fixUrl(r['video']||r['video_file']);
           html+=\`<video controls style="max-width:100%;border-radius:8px;margin-bottom:8px"><source src="\${v}">영상을 재생할 수 없습니다.</video>\`;
         }
         mediaEl.innerHTML=html||'<span style="color:#334155;font-size:12px">첨부파일 없음</span>';
