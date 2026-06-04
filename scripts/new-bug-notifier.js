@@ -71,9 +71,15 @@ function sendSlack(bug){
   });
 }
 
+async function addColIfNotExists(col, def){
+  try {
+    const rows = await query(`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='bug_report_sync' AND COLUMN_NAME='${col}'`);
+    if(!rows.length) await query(`ALTER TABLE bug_report_sync ADD COLUMN ${col} ${def}`);
+  } catch(e){ console.log(`addCol ${col}:`, e.message); }
+}
+
 async function main(){
-  // slack_notified 컬럼 없으면 추가
-  try { await query(`ALTER TABLE bug_report_sync ADD COLUMN IF NOT EXISTS slack_notified TINYINT DEFAULT 0`); } catch(e){}
+  await addColIfNotExists('slack_notified', 'TINYINT DEFAULT 0');
 
   const rows = await query(`SELECT bug_id, product_name, email, content, created_at FROM bug_report_sync WHERE (slack_notified IS NULL OR slack_notified=0) AND answered=0 AND created_at >= '2026-06-05' ORDER BY created_at ASC LIMIT 20`);
   console.log(`미알림 문의: ${rows.length}건`);
