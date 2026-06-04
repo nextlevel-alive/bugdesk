@@ -155,7 +155,7 @@ function sendSlackReminder(cnt){
 
 async function pollNewBugs(){
   try {
-    const rows=await query(`SELECT bug_id, product_name, type, email, content, created_at FROM bug_report_sync WHERE (slack_notified IS NULL OR slack_notified=0) ORDER BY created_at ASC LIMIT 20`);
+    const rows=await query(`SELECT bug_id, product_name, type, email, content, created_at FROM bug_report_sync WHERE (slack_notified IS NULL OR slack_notified=0) AND created_at >= '2026-06-01' ORDER BY created_at ASC LIMIT 20`);
     for(const r of rows){
       sendSlack(r);
       await query(`UPDATE bug_report_sync SET slack_notified=1 WHERE bug_id='${esc(r.bug_id)}'`);
@@ -267,8 +267,8 @@ tr.bug-row:hover td{background:#1a1f2e;cursor:pointer;}
 </div>
 <div class="card">
 <table>
-  <thead><tr><th>날짜</th><th>제품</th><th>유형</th><th>세부유형</th><th>이메일</th><th>내용 미리보기</th><th>상태</th></tr></thead>
-  <tbody id="bugTable"><tr><td colspan="7" style="text-align:center;color:#475569;padding:32px">불러오는 중...</td></tr></tbody>
+  <thead><tr><th>날짜</th><th>제품</th><th>유형</th><th>세부유형</th><th>태그</th><th>이메일</th><th>내용 미리보기</th><th>상태</th></tr></thead>
+  <tbody id="bugTable"><tr><td colspan="8" style="text-align:center;color:#475569;padding:32px">불러오는 중...</td></tr></tbody>
 </table>
 </div>
 </div><!-- /panel-list -->
@@ -335,7 +335,7 @@ function filterLocal(){
 
 function renderTable(bugs){
   const tbody=document.getElementById('bugTable');
-  if(!bugs.length){tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:#475569;padding:32px">문의 내역이 없습니다.</td></tr>';return;}
+  if(!bugs.length){tbody.innerHTML='<tr><td colspan="8" style="text-align:center;color:#475569;padding:32px">문의 내역이 없습니다.</td></tr>';return;}
   tbody.innerHTML='';
   bugs.forEach((b,i)=>{
     const isOpen = b.bug_id === openBugId;
@@ -347,12 +347,18 @@ function renderTable(bugs){
       <td style="font-size:12px;font-weight:600;color:#a78bfa">\${b.product_name||'-'}</td>
       <td style="font-size:12px">\${b.type||'-'}</td>
       <td style="font-size:12px;color:#64748b">\${b.subtype||'-'}</td>
+      <td onclick="event.stopPropagation()" style="min-width:120px">
+        <div style="display:flex;flex-wrap:wrap;gap:3px;align-items:center">
+          \${(b.tags||'').split(',').filter(t=>t.trim()).map(t=>\`<span class="tag-chip" style="font-size:10px;padding:2px 7px">\${t.trim()}<span class="tag-x" onclick="event.stopPropagation();inlineRemoveTag('\${b.bug_id}','\${t.trim()}',this)">×</span></span>\`).join('')}
+          <span style="cursor:pointer;color:#475569;font-size:16px;line-height:1;padding:0 2px" onclick="event.stopPropagation();showInlineTagInput('\${b.bug_id}',this)" title="태그 추가">+</span>
+        </div>
+      </td>
       <td style="font-size:12px;color:#94a3b8">\${b.email||'-'}</td>
       <td><div class="preview">\${b.content||''}</div></td>
       <td><span class="badge \${isAns?'badge-ans':'badge-unans'}">\${isAns?'답변완료':'미답변'}</span></td>
     </tr>
     <tr class="detail-row\${isOpen?' open':''}" id="detail-\${i}">
-      <td class="detail-cell" colspan="7">
+      <td class="detail-cell" colspan="8">
         <div class="detail-inner">
           <div>
             <div class="detail-section">
@@ -402,6 +408,49 @@ function renderTable(bugs){
       else if(el&&mediaCache[openBugId]===undefined) loadMedia(openBugId,el);
     }
   }
+}
+
+// ── 인라인 태그 (테이블 행) ────────────────────────────────────
+async function inlineRemoveTag(bugId,tag,el){
+  const chip=el.closest('.tag-chip');
+  const container=chip.parentElement;
+  chip.remove();
+  const current=Array.from(container.querySelectorAll('.tag-chip')).map(c=>c.textContent.replace('×','').trim());
+  await saveTagsToDB(bugId,current);
+  const idx=allBugs.findIndex(b=>b.bug_id===bugId);
+  if(idx>=0) allBugs[idx].tags=current.join(',');
+}
+
+function showInlineTagInput(bugId,plusEl){
+  const container=plusEl.parentElement;
+  if(container.querySelector('.inline-tag-input')) return;
+  const inp=document.createElement('input');
+  inp.className='tag-input inline-tag-input';
+  inp.style.width='110px';
+  inp.setAttribute('list','tag-list-inline');
+  inp.placeholder='태그 입력 후 Enter';
+  inp.onkeydown=async(e)=>{
+    if(e.key==='Escape'){inp.remove();return;}
+    if(e.key!=='Enter') return;
+    const tag=inp.value.trim();
+    if(!tag){inp.remove();return;}
+    const chips=Array.from(container.querySelectorAll('.tag-chip')).map(c=>c.textContent.replace('×','').trim());
+    if(!chips.includes(tag)){
+      const chip=document.createElement('span');
+      chip.className='tag-chip';
+      chip.style.cssText='font-size:10px;padding:2px 7px';
+      chip.innerHTML=\`\${tag}<span class="tag-x" onclick="event.stopPropagation();inlineRemoveTag('\${bugId}','\${tag}',this)">×</span>\`;
+      container.insertBefore(chip,inp);
+      const newTags=[...chips,tag];
+      await saveTagsToDB(bugId,newTags);
+      const idx=allBugs.findIndex(b=>b.bug_id===bugId);
+      if(idx>=0) allBugs[idx].tags=newTags.join(',');
+    }
+    inp.value='';inp.remove();
+  };
+  inp.onblur=()=>setTimeout(()=>inp.remove(),150);
+  container.insertBefore(inp,plusEl);
+  inp.focus();
 }
 
 // ── 태그 기능 ─────────────────────────────────────────────────
