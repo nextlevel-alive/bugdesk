@@ -247,7 +247,7 @@ tr.bug-row:hover td{background:#1a1f2e;cursor:pointer;}
     <option value="1">답변완료</option>
   </select>
   <input type="text" id="fSearch" placeholder="이메일 또는 내용 검색..." style="width:220px" oninput="filterLocal()"/>
-  <button class="btn btn-sm" onclick="load()">새로고침</button>
+  <button class="btn btn-sm" onclick="load(true)">새로고침</button>
   <button class="btn btn-sm" id="syncBtn" onclick="syncBubble()" style="background:#0e7490">Bubble 동기화</button>
 </div>
 <div class="card">
@@ -282,7 +282,9 @@ function switchTab(tab){
   if(tab==='summary'&&!document.getElementById('summaryGrid').innerHTML) loadSummary();
 }
 
-async function load(){
+async function load(manual=false){
+  // 자동 새로고침 시 textarea에 타이핑 중이면 건너뜀
+  if(!manual && document.activeElement && document.activeElement.classList.contains('answer-area')) return;
   const product=document.getElementById('fProduct').value;
   const type=document.getElementById('fType').value;
   const answered=document.getElementById('fAnswered').value;
@@ -434,7 +436,7 @@ async function submitAnswer(bugId,i){
       else if(data.bubble) msg+=\` (Bubble: \${data.bubble.status})\`;
       if(data.kakao&&!data.kakao.skipped) msg+=data.kakao.errorCode?' ⚠ 알림톡 실패':' 📲 알림톡 발송됨';
       resultEl.style.color='#34d399';resultEl.textContent=msg;
-      load();
+      load(true);
     }else{resultEl.style.color='#fb7185';resultEl.textContent='❌ '+(data.error||'오류 발생');}
   }catch(e){resultEl.style.color='#fb7185';resultEl.textContent='❌ 네트워크 오류';}
   btn.disabled=false;btn.textContent='답변 전송';
