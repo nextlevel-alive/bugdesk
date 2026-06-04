@@ -283,8 +283,11 @@ function switchTab(tab){
 }
 
 async function load(manual=false){
-  // 자동 새로고침 시 textarea에 타이핑 중이면 건너뜀
-  if(!manual && document.activeElement && document.activeElement.classList.contains('answer-area')) return;
+  // 자동 새로고침 시: 작성 중인 내용 있으면 건너뜀
+  if(!manual){
+    const areas=document.querySelectorAll('.answer-area');
+    for(const a of areas){ if(a.value.trim()) return; }
+  }
   const product=document.getElementById('fProduct').value;
   const type=document.getElementById('fType').value;
   const answered=document.getElementById('fAnswered').value;
