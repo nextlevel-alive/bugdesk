@@ -106,11 +106,16 @@ function sendSlack(bug){
   } catch(e){}
 }
 
-async function initSlackColumn(){
+async function addColumnIfNotExists(col, def){
   try {
-    await query(`ALTER TABLE bug_report_sync ADD COLUMN IF NOT EXISTS slack_notified TINYINT DEFAULT 0`);
-    await query(`ALTER TABLE bug_report_sync ADD COLUMN IF NOT EXISTS tags VARCHAR(500) DEFAULT NULL`);
-  } catch(e){}
+    const rows = await query(`SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='${DB.database}' AND TABLE_NAME='bug_report_sync' AND COLUMN_NAME='${col}'`);
+    if(!rows.length) await query(`ALTER TABLE bug_report_sync ADD COLUMN ${col} ${def}`);
+  } catch(e){ console.error('addColumn error:', col, e.message); }
+}
+
+async function initSlackColumn(){
+  await addColumnIfNotExists('slack_notified', 'TINYINT DEFAULT 0');
+  await addColumnIfNotExists('tags', 'VARCHAR(500) DEFAULT NULL');
 }
 
 // ── 미답변 리마인더 (수/금 오전 10시 KST) ─────────────────────
@@ -644,7 +649,7 @@ const server = http.createServer(async (req, res) => {
     if(type) where+=` AND type='${esc(type)}'`;
     if(answered!==undefined&&answered!=='') where+=` AND answered=${answered==='1'?1:0}`;
     try {
-      const bugs     = await query(`SELECT *, IFNULL(tags,'') AS tags FROM bug_report_sync WHERE ${where} ORDER BY created_at DESC LIMIT 300`);
+      const bugs     = await query(`SELECT * FROM bug_report_sync WHERE ${where} ORDER BY created_at DESC LIMIT 300`);
       const stats    = await query(`SELECT COUNT(*) AS total, SUM(answered=0) AS unans, SUM(answered=1) AS ans FROM bug_report_sync`);
       const products = await query(`SELECT DISTINCT product_name FROM bug_report_sync WHERE product_name IS NOT NULL AND product_name!='' ORDER BY product_name`);
       const types    = await query(`SELECT DISTINCT type FROM bug_report_sync WHERE type IS NOT NULL AND type!='' ORDER BY type`);
