@@ -129,7 +129,7 @@ async function checkUnansweredReminder(){
     const dateStr = kst.toISOString().slice(0, 10);
     if ((day === 3 || day === 5) && hour === 10 && dateStr !== lastReminderDate) {
       lastReminderDate = dateStr;
-      const rows = await query(`SELECT COUNT(*) AS cnt FROM bug_report_sync WHERE answered=0 AND created_at >= '2026-06-01' AND created_at <= NOW() - INTERVAL 48 HOUR`);
+      const rows = await query(`SELECT COUNT(*) AS cnt FROM bug_report_sync WHERE answered=0 AND created_at >= '2026-06-05' AND created_at <= NOW() - INTERVAL 48 HOUR`);
       const cnt = Number(rows[0].cnt);
       if (cnt > 0) sendSlackReminder(cnt);
     }
@@ -155,7 +155,7 @@ function sendSlackReminder(cnt){
 
 async function pollNewBugs(){
   try {
-    const rows=await query(`SELECT bug_id, product_name, type, email, content, created_at FROM bug_report_sync WHERE (slack_notified IS NULL OR slack_notified=0) AND created_at >= '2026-06-01' ORDER BY created_at ASC LIMIT 20`);
+    const rows=await query(`SELECT bug_id, product_name, type, email, content, created_at FROM bug_report_sync WHERE (slack_notified IS NULL OR slack_notified=0) AND answered=0 AND created_at >= '2026-06-05' ORDER BY created_at ASC LIMIT 20`);
     for(const r of rows){
       sendSlack(r);
       await query(`UPDATE bug_report_sync SET slack_notified=1 WHERE bug_id='${esc(r.bug_id)}'`);
