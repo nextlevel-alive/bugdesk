@@ -109,6 +109,7 @@ function sendSlack(bug){
 async function initSlackColumn(){
   try {
     await query(`ALTER TABLE bug_report_sync ADD COLUMN IF NOT EXISTS slack_notified TINYINT DEFAULT 0`);
+    await query(`ALTER TABLE bug_report_sync ADD COLUMN IF NOT EXISTS tags VARCHAR(500) DEFAULT NULL`);
   } catch(e){}
 }
 
@@ -220,6 +221,15 @@ tr.bug-row:hover td{background:#1a1f2e;cursor:pointer;}
 .kw-tag .kw-n{color:#fbbf24;font-weight:700;margin-left:4px;}
 .type-row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1a1f2e;font-size:12px;}
 .type-row:last-child{border-bottom:none;}
+.tag-chip{display:inline-flex;align-items:center;gap:4px;background:#1e3a5f;color:#60a5fa;border-radius:20px;padding:3px 10px;font-size:11px;font-weight:600;margin:2px;}
+.tag-chip .tag-x{cursor:pointer;color:#94a3b8;font-size:13px;line-height:1;}
+.tag-chip .tag-x:hover{color:#fb7185;}
+.tag-input{background:#0f1117;border:1px solid #2d3348;border-radius:8px;color:#e2e8f0;padding:5px 10px;font-size:12px;width:140px;}
+.tag-input:focus{outline:none;border-color:#3b82f6;}
+.pay-history{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px;}
+.pay-history th{padding:5px 8px;font-size:10px;color:#475569;border-bottom:1px solid #2d3348;text-transform:uppercase;}
+.pay-history td{padding:5px 8px;border-bottom:1px solid #1a1f2e;color:#94a3b8;}
+.pay-history tr:last-child td{border-bottom:none;}
 </style>
 </head>
 <body>
@@ -269,6 +279,10 @@ tr.bug-row:hover td{background:#1a1f2e;cursor:pointer;}
   <span id="sTotal" style="font-size:12px;color:#64748b"></span>
 </div>
 <div id="summaryGrid" class="summary-grid"></div>
+<div style="margin-top:28px">
+  <div style="font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#475569;margin-bottom:12px;display:flex;align-items:center;gap:8px">태그별 문의 현황<span style="flex:1;height:1px;background:#2d3348;display:block"></span></div>
+  <div id="tagStats" style="display:flex;flex-wrap:wrap;gap:10px"></div>
+</div>
 </div>
 
 <script>
@@ -345,9 +359,22 @@ function renderTable(bugs){
               <div id="media-\${i}" style="margin-top:6px"><span style="color:#334155;font-size:12px">불러오는 중...</span></div>
             </div>
             \${isAns&&b.answer?\`<div class="detail-section" style="margin-top:12px"><div class="detail-label" style="color:#8b5cf6">기존 답변</div><div class="existing-answer">\${(b.answer||'').replace(/</g,'&lt;')}</div></div>\`:''}
+            <div class="detail-section" style="margin-top:12px">
+              <div class="detail-label">결제 내역</div>
+              <div id="pays-\${i}" style="margin-top:6px"><span style="color:#334155;font-size:12px">불러오는 중...</span></div>
+            </div>
           </div>
-          <div class="detail-section">
-            <div class="detail-label">답변 작성</div>
+          <div>
+            <div class="detail-section" style="margin-bottom:12px">
+              <div class="detail-label">태그</div>
+              <div id="tag-wrap-\${i}" style="margin-top:6px;display:flex;flex-wrap:wrap;align-items:center;gap:4px">
+                \${(b.tags||'').split(',').filter(t=>t.trim()).map(t=>\`<span class="tag-chip">\${t.trim()}<span class="tag-x" onclick="removeTag('\${b.bug_id}',\${i},'\${t.trim()}')">×</span></span>\`).join('')}
+                <input class="tag-input" id="tag-input-\${i}" placeholder="태그 입력 후 Enter" list="tag-list-\${i}" onkeydown="if(event.key==='Enter')addTag('\${b.bug_id}',\${i})"/>
+                <datalist id="tag-list-\${i}"></datalist>
+              </div>
+            </div>
+            <div class="detail-section">
+              <div class="detail-label">답변 작성</div>
             <div style="font-size:12px;color:#64748b;margin-bottom:6px">\${b.email||'이메일 없음'} · \${b.product_name||''}</div>
             <textarea class="answer-area" id="ans-\${i}" placeholder="답변 내용을 입력하세요...">\${isAns&&b.answer?b.answer:''}</textarea>
             <div class="answer-footer">
@@ -355,6 +382,7 @@ function renderTable(bugs){
               <span class="kakao-note">${KAKAO_TEMPLATE_ID?'📲 알림톡 자동 발송':'⚠ 알림톡 템플릿 미설정'}</span>
             </div>
             <div id="result-\${i}" style="margin-top:8px;font-size:12px;"></div>
+            </div>
           </div>
         </div>
       </td>
@@ -369,6 +397,76 @@ function renderTable(bugs){
       else if(el&&mediaCache[openBugId]===undefined) loadMedia(openBugId,el);
     }
   }
+}
+
+// ── 태그 기능 ─────────────────────────────────────────────────
+let allTags=[];
+async function loadAllTags(){
+  const res=await fetch('/api/tag-stats').then(r=>r.json()).catch(()=>[]);
+  allTags=res.map(([t])=>t);
+}
+
+function renderTagDatalist(i){
+  const dl=document.getElementById('tag-list-'+i);
+  if(dl) dl.innerHTML=allTags.map(t=>\`<option value="\${t}">\`).join('');
+}
+
+function getTagsForBug(i){
+  const wrap=document.getElementById('tag-wrap-'+i);
+  if(!wrap) return [];
+  return Array.from(wrap.querySelectorAll('.tag-chip')).map(c=>c.textContent.replace('×','').trim());
+}
+
+async function saveTagsToDB(bugId,tags){
+  await fetch('/api/bugs/'+bugId+'/tags',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tags:tags.join(',')})});
+  if(!allTags.includes) return;
+  tags.forEach(t=>{if(!allTags.includes(t)) allTags.push(t);});
+}
+
+async function addTag(bugId,i){
+  const input=document.getElementById('tag-input-'+i);
+  const tag=input.value.trim();
+  if(!tag) return;
+  const current=getTagsForBug(i);
+  if(current.includes(tag)){input.value='';return;}
+  const newTags=[...current,tag];
+  const wrap=document.getElementById('tag-wrap-'+i);
+  const chip=document.createElement('span');
+  chip.className='tag-chip';
+  chip.innerHTML=\`\${tag}<span class="tag-x" onclick="removeTag('\${bugId}',\${i},'\${tag}')">×</span>\`;
+  wrap.insertBefore(chip,input);
+  input.value='';
+  await saveTagsToDB(bugId,newTags);
+  // allBugs 캐시 업데이트
+  const idx=allBugs.findIndex(b=>b.bug_id===bugId);
+  if(idx>=0) allBugs[idx].tags=newTags.join(',');
+}
+
+async function removeTag(bugId,i,tag){
+  const current=getTagsForBug(i).filter(t=>t!==tag);
+  const wrap=document.getElementById('tag-wrap-'+i);
+  const chips=wrap.querySelectorAll('.tag-chip');
+  chips.forEach(c=>{if(c.textContent.replace('×','').trim()===tag) c.remove();});
+  await saveTagsToDB(bugId,current);
+  const idx=allBugs.findIndex(b=>b.bug_id===bugId);
+  if(idx>=0) allBugs[idx].tags=current.join(',');
+}
+
+// ── 결제 내역 로드 ─────────────────────────────────────────────
+async function loadPayments(uniqueid,el){
+  if(!uniqueid){el.innerHTML='<span style="color:#334155;font-size:12px">uniqueid 없음</span>';return;}
+  el.innerHTML='<span style="color:#475569;font-size:12px">불러오는 중...</span>';
+  const rows=await fetch('/api/payments/'+uniqueid).then(r=>r.json()).catch(()=>[]);
+  if(!rows.length){el.innerHTML='<span style="color:#334155;font-size:12px">결제 내역 없음</span>';return;}
+  const fmtAmt=v=>v==0?'쿠폰':Number(v).toLocaleString()+'원';
+  el.innerHTML=\`<table class="pay-history">
+    <thead><tr><th>제품명</th><th>금액</th><th>결제일</th></tr></thead>
+    <tbody>\${rows.map(r=>\`<tr>
+      <td style="color:#e2e8f0;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="\${r.product_name||''}">\${r.product_name||'-'}</td>
+      <td style="white-space:nowrap\${r.refund_requested=='1'?' ;color:#f87171':''}">\${fmtAmt(r.amount)}\${r.refund_requested=='1'?' (환불)':''}</td>
+      <td style="color:#64748b;white-space:nowrap">\${r.pay_date||'-'}</td>
+    </tr>\`).join('')}</tbody>
+  </table>\`;
 }
 
 function fixUrl(u){if(!u)return '';return u.startsWith('//')?'https:'+u:u;}
@@ -407,9 +505,13 @@ async function toggleDetail(i){
   openIdx=row.classList.contains('open')?i:null;
   openBugId=row.classList.contains('open')?(allBugs[i]?.bug_id||null):null;
   if(row.classList.contains('open')){
-    const bugId=allBugs[i].bug_id;
+    const bug=allBugs[i];
+    const bugId=bug.bug_id;
     const mediaEl=document.getElementById('media-'+i);
     if(mediaEl) await loadMedia(bugId,mediaEl);
+    const paysEl=document.getElementById('pays-'+i);
+    if(paysEl) loadPayments(bug.uniqueid,paysEl);
+    renderTagDatalist(i);
   }
 }
 
@@ -470,9 +572,18 @@ async function loadSummary(){
     </div>\`;
   });
   if(!data.summary||!data.summary.length) grid.innerHTML='<div style="color:#475569;font-size:13px;padding:20px">해당 기간 데이터 없음</div>';
+  // 태그 통계
+  const tagRes=await fetch('/api/tag-stats').then(r=>r.json()).catch(()=>[]);
+  const tagEl=document.getElementById('tagStats');
+  if(tagEl){
+    tagEl.innerHTML=tagRes.length
+      ? tagRes.map(([t,n])=>\`<div style="background:#1e2130;border:1px solid #2d3348;border-radius:10px;padding:10px 16px;display:flex;align-items:center;gap:10px"><span style="color:#60a5fa;font-weight:700;font-size:13px">\${t}</span><span style="background:#0f1117;color:#fbbf24;font-weight:800;font-size:18px;padding:2px 10px;border-radius:8px">\${n}</span><span style="color:#475569;font-size:11px">건</span></div>\`).join('')
+      : '<span style="color:#334155;font-size:12px">등록된 태그 없음</span>';
+  }
 }
 
 load();
+loadAllTags();
 setInterval(load, 30000);
 </script>
 </body>
@@ -495,6 +606,37 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200,{'Content-Type':'application/json;charset=utf-8'});
     res.end(JSON.stringify(result));
 
+  } else if (req.method==='POST' && parsed.pathname.startsWith('/api/bugs/') && parsed.pathname.endsWith('/tags')) {
+    const bugId=parsed.pathname.split('/')[3];
+    const {tags}=await getBody();
+    try {
+      await query(`UPDATE bug_report_sync SET tags='${esc(tags||'')}' WHERE bug_id='${esc(bugId)}'`);
+      res.writeHead(200,{'Content-Type':'application/json;charset=utf-8'});
+      res.end(JSON.stringify({success:true}));
+    } catch(e){res.writeHead(500);res.end(JSON.stringify({error:e.message}));}
+
+  } else if (parsed.pathname.startsWith('/api/payments/') && req.method==='GET') {
+    const uniqueid=parsed.pathname.split('/')[3];
+    try {
+      const rows=await query(`SELECT product_name, amount, DATE(created_at) AS pay_date, coupon_name, refund_requested FROM payments_sync WHERE uniqueid='${esc(uniqueid)}' AND status='DONE' ORDER BY created_at DESC LIMIT 20`);
+      res.writeHead(200,{'Content-Type':'application/json;charset=utf-8'});
+      res.end(JSON.stringify(rows));
+    } catch(e){res.writeHead(500);res.end(JSON.stringify({error:e.message}));}
+
+  } else if (parsed.pathname==='/api/tag-stats' && req.method==='GET') {
+    try {
+      const rows=await query(`SELECT tags, COUNT(*) AS cnt FROM bug_report_sync WHERE tags IS NOT NULL AND tags!='' GROUP BY tags ORDER BY cnt DESC`);
+      // 태그별 집계 (콤마 구분 태그 파싱은 JS에서)
+      const tagMap={};
+      for(const r of rows){
+        const tags=(r.tags||'').split(',').map(t=>t.trim()).filter(Boolean);
+        for(const t of tags){ tagMap[t]=(tagMap[t]||0)+Number(r.cnt); }
+      }
+      const result=Object.entries(tagMap).sort((a,b)=>b[1]-a[1]);
+      res.writeHead(200,{'Content-Type':'application/json;charset=utf-8'});
+      res.end(JSON.stringify(result));
+    } catch(e){res.writeHead(500);res.end(JSON.stringify({error:e.message}));}
+
   } else if (parsed.pathname === '/api/bugs' && req.method === 'GET') {
     const product=parsed.query.product||'', type=parsed.query.type||'', answered=parsed.query.answered;
     let where='1=1';
@@ -502,7 +644,7 @@ const server = http.createServer(async (req, res) => {
     if(type) where+=` AND type='${esc(type)}'`;
     if(answered!==undefined&&answered!=='') where+=` AND answered=${answered==='1'?1:0}`;
     try {
-      const bugs     = await query(`SELECT * FROM bug_report_sync WHERE ${where} ORDER BY created_at DESC LIMIT 300`);
+      const bugs     = await query(`SELECT *, IFNULL(tags,'') AS tags FROM bug_report_sync WHERE ${where} ORDER BY created_at DESC LIMIT 300`);
       const stats    = await query(`SELECT COUNT(*) AS total, SUM(answered=0) AS unans, SUM(answered=1) AS ans FROM bug_report_sync`);
       const products = await query(`SELECT DISTINCT product_name FROM bug_report_sync WHERE product_name IS NOT NULL AND product_name!='' ORDER BY product_name`);
       const types    = await query(`SELECT DISTINCT type FROM bug_report_sync WHERE type IS NOT NULL AND type!='' ORDER BY type`);
