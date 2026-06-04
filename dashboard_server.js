@@ -93,10 +93,11 @@ function sendSlack(bug){
     const u=new URL(SLACK_WEBHOOK);
     const summary=getFirstSentence(bug.content);
     const product=bug.product_name||'미분류';
+    const receivedAt=(bug.created_at||'').slice(0,16);
     const body=JSON.stringify({
-      text:`🍩 신규 버그가 등록되었습니다! 제품 : ${product} | 내용 요약 : '${summary}'`,
+      text:`🍩 신규 버그가 등록되었습니다! 제품 : ${product} | 접수일시 : ${receivedAt} | 내용 요약 : '${summary}'`,
       blocks:[
-        {type:'section',text:{type:'mrkdwn',text:`🍩 *신규 버그가 등록되었습니다!*\n제품 : *${product}*\n내용 요약 : '${summary}'`}},
+        {type:'section',text:{type:'mrkdwn',text:`🍩 *신규 버그가 등록되었습니다!*\n제품 : *${product}*\n접수일시 : ${receivedAt}\n내용 요약 : '${summary}'`}},
         {type:'actions',elements:[{type:'button',text:{type:'plain_text',text:'버그 해결하러 가기',emoji:true},url:'https://bugdesk.vercel.app',style:'primary'}]}
       ]
     });
